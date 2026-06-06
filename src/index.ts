@@ -1,10 +1,10 @@
 import "dotenv/config";
-import { WebResearchAgent } from "./agents/web-research/agent.js";
+import { SupervisorAgent } from "./agents/supervisor.js";
 import * as path from "node:path";
 import * as fs from "node:fs";
 
 async function main() {
-  const agent = new WebResearchAgent();
+  const supervisor = new SupervisorAgent();
 
   const pdfPath = path.resolve(process.cwd(), "references", "qwen3_coder_next_tech_report.pdf");
 
@@ -13,19 +13,46 @@ async function main() {
     return;
   }
 
-  console.log("[PDF] Path: " + pdfPath + "\n");
+  // Тест 1: Первый запрос (новая сессия)
+  console.log("=== Тест 1: Первый запрос ===");
+  const session1 = "test-session-1";
+  const q1 = "Расскажи про Qwen3-Coder-Next. Используй pdf_info и read_pdf.";
+  console.log("[User] " + q1);
+  const a1 = await supervisor.handle(q1, session1);
+  console.log("\n[Answer]\n" + a1 + "\n");
 
-  const query = "Расскажи про Qwen3-Coder-Next. Сначала используй pdf_info чтобы узнать количество страниц, потом read_pdf чтобы прочитать страницы 1-5, затем 6-10, и наконец дай ответ через finish.";
+  // Тест 2: Второй запрос в ту же сессию (контекст должен сохраниться)
+  console.log("=== Тест 2: Второй запрос (та же сессия) ===");
+  const q2 = "Какие бенчмарки упоминаются?";
+  console.log("[User] " + q2);
+  const a2 = await supervisor.handle(q2, session1);
+  console.log("\n[Answer]\n" + a2 + "\n");
 
-  console.log("[User] " + query + "\n");
+  // Тест 3: Веб-поиск (новая сессия)
+  console.log("=== Тест 3: Веб-поиск ===");
+  const session2 = "test-session-2";
+  const q3 = "Какие новые функции в TypeScript 5.0?";
+  console.log("[User] " + q3);
+  const a3 = await supervisor.handle(q3, session2);
+  console.log("\n[Answer]\n" + a3 + "\n");
 
-  const result = await agent.research(query, pdfPath);
+  // Вывод метрик
+  console.log("\n=== Метрики ===");
+  console.log(supervisor.getMetrics());
 
-  console.log("\n===== Результат =====\n");
-  console.log(result.summary);
-  console.log("\nИсточники: " + result.sources.length);
-  console.log("Факты: " + result.facts.length);
-  console.log("Уверенность: " + result.confidence + "%");
+  // Вывод истории сессии
+  console.log("\n=== История сессии " + session1 + " ===");
+  const history = supervisor.getConversationHistory(session1);
+  for (const msg of history) {
+    console.log("[" + msg.role + "] " + msg.content.slice(0, 100) + "...");
+  }
+
+  // Вывод активных сессий
+  console.log("\n=== Активные сессии ===");
+  const sessions = supervisor.listSessions();
+  for (const s of sessions) {
+    console.log("Session: " + s.id + ", messages: " + s.messages.length);
+  }
 }
 
 main().catch(console.error);

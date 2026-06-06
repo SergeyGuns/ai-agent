@@ -1,6 +1,8 @@
 import { AIService } from "./service.js";
 import { ToolRegistry } from "./tools/registry.js";
 import { ChatMessage, AgentConfig } from "./types.js";
+import { Tracer } from "../observability/tracer.js";
+import { Metrics } from "../observability/metrics.js";
 
 const MAX_TOOL_OUTPUT = 1000;
 
@@ -59,6 +61,8 @@ export class Agent {
   private ai: AIService;
   private tools: ToolRegistry;
   private config: AgentConfig;
+  private tracer?: Tracer;
+  private metrics?: Metrics;
 
   constructor(config?: Partial<AgentConfig>) {
     this.ai = new AIService();
@@ -85,6 +89,20 @@ export class Agent {
       workspaceRoot,
       ...config,
     };
+  }
+
+  /**
+   * Установить Tracer для логирования
+   */
+  setTracer(tracer: Tracer): void {
+    this.tracer = tracer;
+  }
+
+  /**
+   * Установить Metrics для сбора метрик
+   */
+  setMetrics(metrics: Metrics): void {
+    this.metrics = metrics;
   }
 
   async process(userMessage: string): Promise<string> {
@@ -142,7 +160,7 @@ export class Agent {
           }
           calledTools.add(callKey);
 
-          console.log("[Step " + (toolLog.length + 1) + "] " + tc.function.name);
+          this.tracer?.debug("Agent", "Tool call: " + tc.function.name, { args });
 
           if (tc.function.name === "finish") {
             return (args.answer || args.response || "") as string;
@@ -152,7 +170,27 @@ export class Agent {
             askedCodebase = true;
           }
 
-          let result = await this.tools.execute(tc.function.name, args);
+          const toolStart = Date.now();
+          let result: string;
+          let toolError = false;
+          try {
+            result = await this.tools.execute(tc.function.name, args);
+          } catch (e: any) {
+            result = "Error: " + e.message;
+            toolError = true;
+          }
+          const toolDurationMs = Date.now() - toolStart;
+
+          // Трейсинг и метрики
+          this.tracer?.logToolCall({
+            agentId: "code-agent",
+            toolName: tc.function.name,
+            args,
+            result,
+            durationMs: toolDurationMs,
+            success: !toolError,
+          });
+          this.metrics?.recordToolCall(tc.function.name, toolDurationMs, toolError);
 
           if (result.length > MAX_TOOL_OUTPUT) {
             result = result.slice(0, MAX_TOOL_OUTPUT) + "\n... [обрезано]";

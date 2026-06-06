@@ -3,6 +3,9 @@ import { Orchestrator } from "../orchestrator/index.js";
 import { classify } from "../orchestrator/classifier.js";
 import { loadRegistry } from "../registry/registry.js";
 import { WebResearchAgent } from "./web-research/agent.js";
+import { ConversationStore } from "../services/memory/index.js";
+import { Tracer } from "../services/observability/tracer.js";
+import { Metrics } from "../services/observability/metrics.js";
 import type { AgentDescriptor, AgentRequest, AgentResponse } from "../orchestrator/types.js";
 
 export class SupervisorAgent {
@@ -10,10 +13,16 @@ export class SupervisorAgent {
   private registry;
   private codeAgent: Agent;
   private webAgent: WebResearchAgent;
+  private conversations: ConversationStore;
+  private tracer: Tracer;
+  private metrics: Metrics;
 
   constructor(workspaceRoot?: string) {
     this.registry = loadRegistry();
     this.orchestrator = new Orchestrator({ defaultAgentId: "general-agent" });
+    this.conversations = this.orchestrator.getConversations();
+    this.tracer = this.orchestrator.getTracer();
+    this.metrics = new Metrics();
 
     // Создаём агентов
     this.codeAgent = new Agent({
@@ -21,6 +30,8 @@ export class SupervisorAgent {
       systemPrompt: "Ты — AI-ассистент для работы с кодом. Используй инструменты.",
       workspaceRoot: workspaceRoot || process.cwd(),
     });
+    this.codeAgent.setTracer(this.tracer);
+    this.codeAgent.setMetrics(this.metrics);
 
     this.webAgent = new WebResearchAgent();
 
@@ -29,16 +40,33 @@ export class SupervisorAgent {
       const desc: AgentDescriptor = {
         ...descriptor,
         handler: async (req: AgentRequest): Promise<AgentResponse> => {
+          const startTime = Date.now();
           let result: string;
+          let error = false;
 
-          // Маршрутизация к нужному агенту
-          if (descriptor.id === "web-research-agent") {
-            const researchResult = await this.webAgent.research(req.message);
-            result = researchResult.summary;
-          } else {
-            // Все остальные агенты используют стандартный Agent
-            result = await this.codeAgent.process(req.message);
+          try {
+            if (descriptor.id === "web-research-agent") {
+              const researchResult = await this.webAgent.research(req.message);
+              result = researchResult.summary;
+            } else {
+              result = await this.codeAgent.process(req.message);
+            }
+          } catch (e: any) {
+            result = "Error: " + e.message;
+            error = true;
           }
+
+          const durationMs = Date.now() - startTime;
+
+          // Трейсинг и метрики
+          this.tracer.logAgentCall({
+            agentId: descriptor.id,
+            input: req.message,
+            output: result,
+            durationMs,
+            sessionId: req.sessionId,
+          });
+          this.metrics.recordAgentCall(descriptor.id, durationMs, 0, 0, error);
 
           return {
             agentId: descriptor.id,
@@ -51,9 +79,10 @@ export class SupervisorAgent {
     }
   }
 
-  async handle(message: string): Promise<string> {
+  async handle(message: string, sessionId?: string): Promise<string> {
+    const sid = sessionId ?? "session-" + Date.now();
     const { intent, confidence } = classify(message);
-    console.log("[Supervisor] intent=" + intent + ", confidence=" + confidence);
+    this.tracer.info("Supervisor", "Classified intent: " + intent, { intent, confidence, sessionId: sid });
 
     // Находим подходящего агента
     const agent = this.orchestrator.listAgents().find((a) =>
@@ -61,9 +90,51 @@ export class SupervisorAgent {
     );
 
     const agentId = agent?.id ?? "general-agent";
-    console.log("[Supervisor] selected agent: " + agentId);
+    this.tracer.info("Supervisor", "Selected agent: " + agentId, { agentId, sessionId: sid });
 
-    const response = await this.orchestrator.handle(message);
+    const response = await this.orchestrator.handle(message, sid);
     return response.content;
+  }
+
+  /**
+   * Получить историю сообщений сессии
+   */
+  getConversationHistory(sessionId: string) {
+    return this.conversations.getMessages(sessionId);
+  }
+
+  /**
+   * Получить все активные сессии
+   */
+  listSessions() {
+    return this.conversations.listSessions();
+  }
+
+  /**
+   * Очистить сессию
+   */
+  clearSession(sessionId: string): void {
+    this.conversations.clearSession(sessionId);
+  }
+
+  /**
+   * Получить метрики системы
+   */
+  getMetrics(): string {
+    return this.metrics.export(this.conversations.sessionCount);
+  }
+
+  /**
+   * Получить все логи трейсера
+   */
+  getLogs(): string {
+    return this.tracer.export();
+  }
+
+  /**
+   * Получить записи трейса по ID
+   */
+  getTrace(traceId: string) {
+    return this.tracer.getTrace(traceId);
   }
 }
