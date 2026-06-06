@@ -1,27 +1,31 @@
 import "dotenv/config";
-import { SupervisorAgent } from "./agents/supervisor.js";
-import { RAGService } from "./services/ai/rag/rag.service.js";
-import { setVectorStore } from "./services/ai/tools/ask-codebase.tool.js";
-import path from "path";
-import { fileURLToPath } from "url";
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
+import { WebResearchAgent } from "./agents/web-research/agent.js";
+import * as path from "node:path";
+import * as fs from "node:fs";
 
 async function main() {
-  console.log("[Init] Индексация RAG-базы...");
-  const rag = new RAGService(__dirname);
-  await rag.index();
-  setVectorStore(rag.vectorStore);
-  console.log("[Init] RAG-база готова\n");
+  const agent = new WebResearchAgent();
 
-  const supervisor = new SupervisorAgent(process.cwd());
+  const pdfPath = path.resolve(process.cwd(), "references", "qwen3_coder_next_tech_report.pdf");
 
-  const userMessage = "Как работает Orchestrator?";
-  console.log("[User] " + userMessage + "\n");
+  if (!fs.existsSync(pdfPath)) {
+    console.error("[Error] PDF не найден: " + pdfPath);
+    return;
+  }
 
-  const answer = await supervisor.handle(userMessage);
-  console.log("\n===== Ответ =====\n");
-  console.log(answer);
+  console.log("[PDF] Path: " + pdfPath + "\n");
+
+  const query = "Расскажи про Qwen3-Coder-Next. Сначала используй pdf_info чтобы узнать количество страниц, потом read_pdf чтобы прочитать страницы 1-5, затем 6-10, и наконец дай ответ через finish.";
+
+  console.log("[User] " + query + "\n");
+
+  const result = await agent.research(query, pdfPath);
+
+  console.log("\n===== Результат =====\n");
+  console.log(result.summary);
+  console.log("\nИсточники: " + result.sources.length);
+  console.log("Факты: " + result.facts.length);
+  console.log("Уверенность: " + result.confidence + "%");
 }
 
 main().catch(console.error);

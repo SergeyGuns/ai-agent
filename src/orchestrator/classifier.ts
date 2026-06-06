@@ -5,6 +5,15 @@ export interface ClassificationResult {
 
 const INTENT_PATTERNS: { intent: string; keywords: string[] }[] = [
   {
+    intent: "web-search",
+    keywords: [
+      "найди", "поиск", "search", "google", "duckduckgo",
+      "в интернете", "онлайн", "online", "web", "сайт",
+      "что такое", "кто такой", "расскажи о", "информация о",
+      "новости", "news", "актуальный", "последний",
+    ],
+  },
+  {
     intent: "file-list",
     keywords: ["список", "list", "файлы", "files", "директор", "folder", "папка"],
   },

@@ -1,4 +1,4 @@
-import fs from "fs";
+import * as fs from "fs";
 import { ToolDefinition } from "../types.js";
 
 export function createReadFileTool(workspaceRoot: string): ToolDefinition {

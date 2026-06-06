@@ -4,6 +4,57 @@ import { ChatMessage, AgentConfig } from "./types.js";
 
 const MAX_TOOL_OUTPUT = 1000;
 
+interface ToolCallLog {
+  name: string;
+  args: Record<string, unknown>;
+  result: string;
+}
+
+async function checkLoop(
+  ai: AIService,
+  userMessage: string,
+  recentLogs: ToolCallLog[],
+): Promise<{ isLoop: boolean; shouldFinish: boolean; reason: string }> {
+  const logSummary = recentLogs
+    .map((t, i) => `[${i + 1}] ${t.name}(${JSON.stringify(t.args)}) → ${t.result.slice(0, 300)}`)
+    .join("\n");
+
+  const prompt = `Ты — детектор зацикливания AI-агента.
+
+ЗАДАЧА: ${userMessage}
+
+ПОСЛЕДНИЕ ДЕЙСТВИЯ АГЕНТА:
+${logSummary}
+
+Проанализируй и ответь JSON:
+{"loop": true/false, "finish": true/false, "reason": "почему"}
+
+loop = true если: повторяющиеся вызовы с одинаковыми аргументами, агент ходит по кругу
+finish = true если: достаточно данных для ответа, агент застрял и нужно остановиться`;
+
+  try {
+    const response = await ai.complete(
+      "Ответь строго в формате JSON.",
+      prompt,
+      { temperature: 1, maxTokens: 300 },
+    );
+
+    const jsonMatch = response.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      const parsed = JSON.parse(jsonMatch[0]);
+      return {
+        isLoop: parsed.loop === true,
+        shouldFinish: parsed.finish === true,
+        reason: parsed.reason || "",
+      };
+    }
+  } catch (e) {
+    console.error("[LoopDetector] Error:", e);
+  }
+
+  return { isLoop: false, shouldFinish: false, reason: "" };
+}
+
 export class Agent {
   private ai: AIService;
   private tools: ToolRegistry;
@@ -15,18 +66,21 @@ export class Agent {
     this.tools = new ToolRegistry(workspaceRoot);
 
     this.config = {
-      maxIterations: 100,
+      maxIterations: 999,
       systemPrompt:
         "Ты — ассистент разработчика.\n\n" +
         "ПРАВИЛА:\n" +
         "1. Для вопросов о коде вызови ask_codebase(question) ОДИН раз\n" +
         "2. Получив результат — сразу вызови finish(answer) с ответом\n" +
         "3. НЕ вызывай ask_codebase дважды\n" +
-        "4. НЕ вызывай list_files после ask_codebase\n\n" +
+        "4. Отвечай только на русском языке\n\n" +
         "Инструменты:\n" +
-        "- ask_codebase(question) — поиск по коду\n" +
+        "- ask_codebase(question) — поиск по коду RAG\n" +
         "- read_file(path) — прочитать файл\n" +
         "- list_files(dir) — список файлов\n" +
+        "- run_command(cmd) — выполнить команду\n" +
+        "- search_code(pattern) — поиск по коду\n" +
+        "- write_file(path, content) — записать файл\n" +
         "- finish(answer) — завершить и дать ответ\n",
       workspaceRoot,
       ...config,
@@ -40,13 +94,13 @@ export class Agent {
     ];
 
     const toolManifests = this.tools.getToolManifests();
-    let iterations = 0;
     const calledTools = new Set<string>();
     let askedCodebase = false;
+    const toolLog: ToolCallLog[] = [];
+    const LOOP_CHECK_INTERVAL = 10;
+    const RECENT_LOGS_WINDOW = 5;
 
-    while (iterations < this.config.maxIterations) {
-      iterations++;
-
+    while (true) {
       const response = await this.ai.completeWithTools(messages, toolManifests);
       const choice = response.choices[0];
       const message = choice.message;
@@ -72,16 +126,7 @@ export class Agent {
             messages.push({
               role: "tool",
               tool_call_id: tc.id,
-              content: "ask_codebase уже вызывался. Используй предыдущий результат и вызови finish.",
-            });
-            continue;
-          }
-
-          if (tc.function.name === "list_files" && askedCodebase) {
-            messages.push({
-              role: "tool",
-              tool_call_id: tc.id,
-              content: "НЕ вызывай list_files после ask_codebase. Вызови finish с ответом.",
+              content: "ask_codebase уже вызывался. Вызови finish.",
             });
             continue;
           }
@@ -91,13 +136,13 @@ export class Agent {
             messages.push({
               role: "tool",
               tool_call_id: tc.id,
-              content: "Уже вызывалось. Вызови finish.",
+              content: "Уже вызывалось с такими аргументами. Вызови finish.",
             });
             continue;
           }
           calledTools.add(callKey);
 
-          console.log("[Tool] " + tc.function.name + "(" + JSON.stringify(args) + ")");
+          console.log("[Step " + (toolLog.length + 1) + "] " + tc.function.name);
 
           if (tc.function.name === "finish") {
             return (args.answer || args.response || "") as string;
@@ -113,15 +158,24 @@ export class Agent {
             result = result.slice(0, MAX_TOOL_OUTPUT) + "\n... [обрезано]";
           }
 
+          toolLog.push({ name: tc.function.name, args, result });
+
           messages.push({
             role: "tool",
             tool_call_id: tc.id,
             content: result,
           });
 
-          if (tc.function.name === "ask_codebase") {
-            console.log("[Agent] Forcing finish after ask_codebase");
-            return result;
+          // LoopDetector каждые N шагов
+          if (toolLog.length > 0 && toolLog.length % LOOP_CHECK_INTERVAL === 0) {
+            const recentLogs = toolLog.slice(-RECENT_LOGS_WINDOW);
+            console.log("[LoopDetector] Проверка после " + toolLog.length + " шагов...");
+            const check = await checkLoop(this.ai, userMessage, recentLogs);
+            console.log("[LoopDetector] loop=" + check.isLoop + " finish=" + check.shouldFinish + " reason=" + check.reason);
+
+            if (check.isLoop || check.shouldFinish) {
+              return this.summarizeAndFinish(userMessage, toolLog);
+            }
           }
         }
         continue;
@@ -129,7 +183,29 @@ export class Agent {
 
       return message.content || "Нет ответа";
     }
+  }
 
-    return "Превышен лимит итераций";
+  private async summarizeAndFinish(userMessage: string, toolLog: ToolCallLog[]): Promise<string> {
+    const logSummary = toolLog
+      .map((t, i) => `[${i + 1}] ${t.name}:\n${t.result.slice(0, 400)}`)
+      .join("\n\n");
+
+    const prompt = `Вопрос: ${userMessage}
+
+Собранная информация (${toolLog.length} шагов):
+${logSummary}
+
+Дай полный структурированный ответ на основе этих данных.`;
+
+    try {
+      return await this.ai.complete(
+        "Ты — ассистент разработчика. Ответь на вопрос пользователя.",
+        prompt,
+        { temperature: 1, maxTokens: 4096 },
+      );
+    } catch (e) {
+      console.error("[summarizeAndFinish] Error:", e);
+      return "Ошибка при формировании ответа.";
+    }
   }
 }

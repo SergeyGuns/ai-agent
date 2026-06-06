@@ -1,9 +1,6 @@
-import fs from "fs";
-import path from "path";
-import { fileURLToPath } from "url";
-import yaml from "js-yaml";
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
+import * as fs from "node:fs";
+import * as path from "node:path";
+import * as yaml from "js-yaml";
 
 export interface AgentYamlDescriptor {
   id: string;
@@ -13,7 +10,8 @@ export interface AgentYamlDescriptor {
 }
 
 export function loadRegistry(): AgentYamlDescriptor[] {
-  const yamlPath = path.join(__dirname, "agents.yaml");
+  // Используем process.cwd() так как __dirname недоступен в ESM без import.meta
+  const yamlPath = path.resolve(process.cwd(), "src", "registry", "agents.yaml");
   const raw = fs.readFileSync(yamlPath, "utf-8");
   return yaml.load(raw) as AgentYamlDescriptor[];
 }

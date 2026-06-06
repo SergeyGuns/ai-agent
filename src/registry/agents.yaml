@@ -8,6 +8,11 @@
   type: local
   capabilities: [retrieval, summarization]
 
+- id: web-research-agent
+  name: Web Research Agent
+  type: local
+  capabilities: [web-search, web-scrape, browser, fact-check]
+
 - id: general-agent
   name: General Agent
   type: local
