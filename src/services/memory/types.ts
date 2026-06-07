@@ -27,4 +27,11 @@ export interface ConversationStoreOptions {
   persistPath?: string;       // путь для сохранения в JSON (опционально)
   retentionDays?: number;     // дней хранения сессий (по умолчанию 30, 0 = бесконечно)
   archivePath?: string;       // путь для архивации старых сессий (опционально)
+  // === Context Budget (MS Reference Architecture: Context Engineering) ===
+  /** Максимум токенов в контексте (при превышении — суммаризация). По умолчанию 8000 */
+  contextBudgetTokens?: number;
+  /** Порог для запуска суммаризации (доля от budget, 0.0-1.0). По умолчанию 0.8 */
+  summarizationThreshold?: number;
+  /** Минимальное количество сообщений до суммаризации. По умолчанию 10 */
+  minMessagesBeforeSummary?: number;
 }

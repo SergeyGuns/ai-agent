@@ -5,6 +5,8 @@ export interface AgentMetrics {
   errors: number;
   tokensUsed: number;
   tokensGenerated: number;
+  /** Метрики по версиям: version → { calls, errors, totalDurationMs } */
+  versions: Map<string, { calls: number; errors: number; totalDurationMs: number }>;
 }
 
 export interface ToolMetrics {
@@ -48,7 +50,7 @@ export class Metrics {
   recordAgentCall(agentId: string, durationMs: number, tokensUsed: number, tokensGenerated: number, error?: boolean): void {
     let m = this.agentMetrics.get(agentId);
     if (!m) {
-      m = { agentId, calls: 0, totalDurationMs: 0, errors: 0, tokensUsed: 0, tokensGenerated: 0 };
+      m = { agentId, calls: 0, totalDurationMs: 0, errors: 0, tokensUsed: 0, tokensGenerated: 0, versions: new Map() };
       this.agentMetrics.set(agentId, m);
     }
     m.calls++;
@@ -60,6 +62,75 @@ export class Metrics {
     this.totalRequests++;
     this.totalDurationMs += durationMs;
     if (error) this.totalErrors++;
+  }
+
+  /**
+   * Записать вызов агента с указанием версии (для canary/A-B comparison).
+   */
+  recordAgentCallWithVersion(
+    agentId: string,
+    agentVersion: string,
+    durationMs: number,
+    tokensUsed: number,
+    tokensGenerated: number,
+    error?: boolean,
+  ): void {
+    // Update base metrics
+    this.recordAgentCall(agentId, durationMs, tokensUsed, tokensGenerated, error);
+
+    // Update version-specific metrics
+    const m = this.agentMetrics.get(agentId);
+    if (!m) return;
+
+    let v = m.versions.get(agentVersion);
+    if (!v) {
+      v = { calls: 0, errors: 0, totalDurationMs: 0 };
+      m.versions.set(agentVersion, v);
+    }
+    v.calls++;
+    v.totalDurationMs += durationMs;
+    if (error) v.errors++;
+  }
+
+  /**
+   * Получить метрики по версии агента.
+   */
+  getVersionMetrics(agentId: string, agentVersion: string): { calls: number; errors: number; avgDurationMs: number; errorRate: number } | undefined {
+    const m = this.agentMetrics.get(agentId);
+    if (!m) return undefined;
+    const v = m.versions.get(agentVersion);
+    if (!v) return undefined;
+    return {
+      calls: v.calls,
+      errors: v.errors,
+      avgDurationMs: v.calls > 0 ? v.totalDurationMs / v.calls : 0,
+      errorRate: v.calls > 0 ? v.errors / v.calls : 0,
+    };
+  }
+
+  /**
+   * Сравнить метрики двух версий агента (для canary/shadow analysis).
+   * Возвращает сравнение error rate и avg duration.
+   */
+  compareVersions(
+    agentId: string,
+    versionA: string,
+    versionB: string,
+  ): {
+    versionA: { calls: number; errorRate: number; avgDurationMs: number };
+    versionB: { calls: number; errorRate: number; avgDurationMs: number };
+    deltaErrorRate: number; // positive = B is worse
+    deltaAvgDurationMs: number; // positive = B is slower
+  } | undefined {
+    const a = this.getVersionMetrics(agentId, versionA);
+    const b = this.getVersionMetrics(agentId, versionB);
+    if (!a || !b) return undefined;
+    return {
+      versionA: a,
+      versionB: b,
+      deltaErrorRate: b.errorRate - a.errorRate,
+      deltaAvgDurationMs: b.avgDurationMs - a.avgDurationMs,
+    };
   }
 
   /**

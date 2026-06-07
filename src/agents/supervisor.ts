@@ -2,10 +2,13 @@ import { Agent } from "../services/ai/agent.js";
 import { Orchestrator } from "../orchestrator/index.js";
 import { loadRegistry } from "../registry/registry.js";
 import { WebResearchAgent } from "./web-research/agent.js";
+import { CommandAgent } from "./command/agent.js";
 import { ConversationStore } from "../services/memory/index.js";
 import { Tracer } from "../services/observability/tracer.js";
 import { Metrics } from "../services/observability/metrics.js";
-import { RBACService, AuditLog } from "../security/index.js";
+import { RBACService, AuditLog } from "../services/security/index.js";
+import { EvaluationService } from "../services/evaluation/service.js";
+import { withEvaluation, EvaluationMiddleware, runOfflineEvaluation } from "../services/evaluation/middleware.js";
 import type { AgentDescriptor, AgentRequest, AgentResponse } from "../orchestrator/types.js";
 
 export class SupervisorAgent {
@@ -13,6 +16,7 @@ export class SupervisorAgent {
   private registry;
   private codeAgent: Agent;
   private webAgent: WebResearchAgent;
+  private commandAgent: CommandAgent;
   private conversations: ConversationStore;
   private tracer: Tracer;
   private metrics: Metrics;
@@ -49,6 +53,7 @@ export class SupervisorAgent {
     this.codeAgent.setMetrics(this.metrics);
 
     this.webAgent = new WebResearchAgent();
+    this.commandAgent = new CommandAgent(workspaceRoot);
 
     // Регистрируем всех агентов из реестра
     for (const descriptor of this.registry) {
@@ -63,6 +68,8 @@ export class SupervisorAgent {
             if (descriptor.id === "web-research-agent") {
               const researchResult = await this.webAgent.research(req.message);
               result = researchResult.summary;
+            } else if (descriptor.id === "command-agent") {
+              result = await this.commandAgent.execute(req.message);
             } else {
               result = await this.codeAgent.process(req.message);
             }
@@ -80,8 +87,16 @@ export class SupervisorAgent {
             output: result,
             durationMs,
             sessionId: req.sessionId,
+            agentVersion: descriptor.version,
           });
-          this.metrics.recordAgentCall(descriptor.id, durationMs, 0, 0, error);
+          this.metrics.recordAgentCallWithVersion(
+            descriptor.id,
+            descriptor.version ?? "unknown",
+            durationMs,
+            0,
+            0,
+            error,
+          );
 
           return {
             agentId: descriptor.id,
@@ -99,6 +114,9 @@ export class SupervisorAgent {
    */
   private inferRole(capabilities: string[]): "admin" | "developer" | "researcher" | "readonly" {
     if (capabilities.includes("general")) return "readonly";
+    if (capabilities.some((c) => ["command-exec", "shell", "devops"].includes(c))) {
+      return "admin";
+    }
     if (capabilities.some((c) => ["web-search", "web-scrape", "browser", "fact-check"].includes(c))) {
       return "researcher";
     }

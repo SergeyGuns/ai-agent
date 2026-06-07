@@ -16,6 +16,9 @@ export const INTENT_TO_CAPABILITY: Record<string, string> = {
   "file-read": "file-read",
   "code-search": "code-search",
   "rag-query": "retrieval",
+  "command-exec": "command-exec",
+  "shell": "shell",
+  "devops": "devops",
   "general": "general",
 };
 
@@ -96,6 +99,41 @@ const INTENT_PATTERNS: { intent: string; keywords: string[]; weight: number }[] 
     ],
   },
   {
+    intent: "command-exec",
+    weight: 1.5,
+    keywords: [
+      "выполни", "выполни команду", "запусти", "запустить",
+      "команду", "command", "выполни команду", "exec",
+      "terminal", "терминал", "shell", "bash",
+    ],
+  },
+  {
+    intent: "shell",
+    weight: 1.5,
+    keywords: [
+      "shell", "bash", "zsh",
+      "скрипт", "pipeline",
+      "pipe ", "grep ", "awk ", "sed ",
+      "chmod ", "chown ", "mkdir ", "rm -",
+      "ls -la", "curl ", "wget ",
+    ],
+  },
+  {
+    intent: "devops",
+    weight: 1.6,
+    keywords: [
+      "docker", "kubernetes", "k8s", "helm",
+      "ci", "cd", "ci/cd", "pipeline",
+      "deploy", "деплой", "build", "сборка",
+      "test", "тест", "npm test", "pytest", "vitest",
+      "git push", "git pull", "git commit", "git merge",
+      "terraform", "ansible", "jenkins", "github actions",
+      "monitoring", "лог", "логи", "logs",
+      "сервер", "server", "nginx", "apache",
+      "database", "бд", "db", "postgres", "mysql", "redis",
+    ],
+  },
+  {
     intent: "general",
     weight: 0, // Fallback — не участвует в keyword matching
     keywords: [],
@@ -104,7 +142,7 @@ const INTENT_PATTERNS: { intent: string; keywords: string[]; weight: number }[] 
 
 // Keyword-based classification (быстрый, бесплатный)
 // Использует scoring: считаем количество совпадений для каждого intent
-function classifyByKeyword(message: string): ClassificationResult | null {
+export function classifyByKeyword(message: string): ClassificationResult | null {
   const lower = message.toLowerCase();
   let bestIntent: string | null = null;
   let bestScore = 0;
@@ -148,6 +186,9 @@ const LLM_CLASSIFICATION_PROMPT = `Классифицируй запрос по�
 - file-read: чтение содержимого файла
 - code-search: поиск по коду, поиск функций/классов
 - rag-query: запрос к базе знаний / документации
+- command-exec: выполнить команду, запустить команду, выполнить shell команду
+- shell: shell/bash команды, скрипты, пайплайны, файловые операции
+- devops: docker, kubernetes, deploy, build, test, git, CI/CD, серверы, базы данных
 - general: общий запрос, не попадающий в другие категории
 
 Ответь СТРОГО в формате JSON: {"intent": "<intent>", "confidence": <0.0-1.0>}`;

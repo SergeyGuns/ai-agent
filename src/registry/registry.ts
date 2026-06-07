@@ -25,6 +25,8 @@ const AgentYamlSchema = z.object({
   promptVersion: z.string().optional().default("1.0.0"),
   modelVersion: z.string().optional(),
   trafficWeight: TrafficWeightSchema,
+  // === RBAC ===
+  role: z.enum(["admin", "developer", "researcher", "readonly"]).optional().default("readonly"),
 });
 
 const AgentsYamlSchema = z.array(AgentYamlSchema).min(1);
@@ -217,3 +219,7 @@ export {
   pruneSnapshots,
 } from "./rollback.js";
 export type { RegistrySnapshot, RollbackResult } from "./rollback.js";
+
+// === Re-export monitor (MS Reference Architecture: Agent Registry — Monitor Component) ===
+export { RegistryMonitor } from "./monitor.js";
+export type { AgentHealth, MonitorOptions } from "./monitor.js";

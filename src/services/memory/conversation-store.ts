@@ -28,6 +28,10 @@ export class ConversationStore {
       persistPath: options?.persistPath ?? this._defaultPersistPath(),
       retentionDays: options?.retentionDays ?? 30,
       archivePath: options?.archivePath ?? this._defaultArchivePath(),
+      // === Context Budget (MS Reference Architecture: Context Engineering) ===
+      contextBudgetTokens: options?.contextBudgetTokens ?? 8000,
+      summarizationThreshold: options?.summarizationThreshold ?? 0.8,
+      minMessagesBeforeSummary: options?.minMessagesBeforeSummary ?? 10,
     };
 
     if (this.options.persistPath) {
@@ -88,6 +92,9 @@ export class ConversationStore {
     });
     session.updatedAt = Date.now();
 
+    // === Context Budget: check and auto-summarize ===
+    this._maybeSummarize(session);
+
     // Обрезаем старые сообщения если превышен лимит
     if (session.messages.length > this.options.maxMessages) {
       session.messages = session.messages.slice(-this.options.maxMessages);
@@ -95,6 +102,121 @@ export class ConversationStore {
 
     this.dirty = true;
     this._schedulePersist();
+  }
+
+  /**
+   * Оценить размер контекста в токенах (грубая оценка: ~4 символа = 1 токен).
+   */
+  estimateTokens(sessionId: string): number {
+    const messages = this.getMessages(sessionId);
+    let total = 0;
+    for (const msg of messages) {
+      total += Math.ceil(msg.content.length / 4);
+    }
+    return total;
+  }
+
+  /**
+   * Получить context budget status для сессии.
+   */
+  getContextStatus(sessionId: string): {
+    estimatedTokens: number;
+    budget: number;
+    usage: number; // 0.0-1.0
+    needsSummarization: boolean;
+  } {
+    const tokens = this.estimateTokens(sessionId);
+    const budget = this.options.contextBudgetTokens;
+    return {
+      estimatedTokens: tokens,
+      budget,
+      usage: tokens / budget,
+      needsSummarization: tokens >= budget * this.options.summarizationThreshold,
+    };
+  }
+
+  /**
+   * Автоматическая суммаризация старых сообщений при превышении context budget.
+   * Сохраняет последние minMessagesBeforeSummary сообщений, остальные заменяет на summary.
+   */
+  private _maybeSummarize(session: ConversationSession): void {
+    if (session.messages.length < this.options.minMessagesBeforeSummary) return;
+
+    const tokens = this.estimateTokens(session.id);
+    const threshold = this.options.contextBudgetTokens * this.options.summarizationThreshold;
+
+    if (tokens < threshold) return;
+
+    // Summarize: keep last N messages, replace the rest
+    const keepCount = this.options.minMessagesBeforeSummary;
+    const toSummarize = session.messages.slice(0, -keepCount);
+    const toKeep = session.messages.slice(-keepCount);
+
+    if (toSummarize.length === 0) return;
+
+    // Create summary message
+    const summaryText = this._createSummary(toSummarize);
+    const summaryMsg: ConversationMessage = {
+      role: "system",
+      content: "[Context Summary] " + summaryText,
+      timestamp: Date.now(),
+    };
+
+    session.messages = [summaryMsg, ...toKeep];
+  }
+
+  /**
+   * Создать текстовую сводку из сообщений.
+   *
+   * v2 — Improved extractive summarization:
+   * - Приоритизация по роли: user > assistant > system/tool
+   * - Дедупликация повторяющихся сообщений
+   * - Сохранение ключевых фактов и решений
+   * - Ограничение размера суммари
+   *
+   * Для production — заменить на LLM-based summarization.
+   */
+  private _createSummary(messages: ConversationMessage[]): string {
+    if (messages.length === 0) return "";
+
+    // Приоритизация по роли
+    const rolePriority: Record<string, number> = { user: 0, assistant: 1, system: 2, tool: 3 };
+    const sorted = [...messages].sort(
+      (a, b) => (rolePriority[a.role] ?? 99) - (rolePriority[b.role] ?? 99),
+    );
+
+    // Дедупликация и создание суммари
+    const seen = new Set<string>();
+    const parts: string[] = [];
+    const maxSummaryLength = 2000;
+
+    for (const msg of sorted) {
+      // Нормализуем для дедупликации
+      const normalized = msg.content.trim().toLowerCase().slice(0, 100);
+      if (seen.has(normalized)) continue;
+      seen.add(normalized);
+
+      // Умная обрезка: сохраняем начало и конец длинных сообщений
+      let preview: string;
+      if (msg.content.length > 300) {
+        const start = msg.content.slice(0, 150).trim();
+        const end = msg.content.slice(-100).trim();
+        preview = start + " ... " + end;
+      } else {
+        preview = msg.content.trim();
+      }
+
+      parts.push("[" + msg.role + "] " + preview);
+
+      // Ограничиваем общий размер суммари
+      const currentLength = parts.join(" | ").length;
+      if (currentLength > maxSummaryLength) {
+        parts.push("... (+" + (sorted.length - parts.length) + " more)");
+        break;
+      }
+    }
+
+    return parts.join(" | ");
   }
 
   /**

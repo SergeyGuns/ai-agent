@@ -31,6 +31,17 @@
   promptVersion: "1.2.0"
   trafficWeight: 1
 
+- id: command-agent
+  name: Command Agent
+  type: local
+  capabilities: [command-exec, shell, devops]
+  role: admin
+  version: "1.0.0"
+  status: active
+  description: "Agent for executing shell commands, running tests, builds, git operations, and DevOps tasks"
+  promptVersion: "1.0.0"
+  trafficWeight: 1
+
 - id: general-agent
   name: General Agent
   type: local

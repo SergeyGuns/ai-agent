@@ -109,6 +109,8 @@ export class Tracer {
     durationMs: number;
     sessionId?: string;
     traceId?: string;
+    /** Версия агента (для version-aware logging) */
+    agentVersion?: string;
   }): void {
     this.log("info", "AgentCall", params.agentId, {
       agentId: params.agentId,
@@ -117,6 +119,7 @@ export class Tracer {
       durationMs: params.durationMs,
       sessionId: params.sessionId,
       traceId: params.traceId,
+      agentVersion: params.agentVersion,
     });
   }
 

@@ -49,14 +49,15 @@ describe("ConversationStore", () => {
   });
 
   it("should evict oldest session when exceeding maxSessions", () => {
-    store.addMessage("s1", "user", "first");
-    store.addMessage("s2", "user", "second");
-    store.addMessage("s3", "user", "third");
-    store.addMessage("s4", "user", "fourth"); // should evict s1
+    const limitedStore = new ConversationStore({ maxMessages: 10, maxSessions: 3, persistPath: "" });
+    limitedStore.addMessage("s1", "user", "first");
+    limitedStore.addMessage("s2", "user", "second");
+    limitedStore.addMessage("s3", "user", "third");
+    limitedStore.addMessage("s4", "user", "fourth"); // should evict s1
 
-    expect(store.sessionCount).toBe(3);
-    expect(store.getMessages("s1").length).toBe(0); // evicted
-    expect(store.getMessages("s4").length).toBe(1);
+    expect(limitedStore.sessionCount).toBe(3);
+    expect(limitedStore.getMessages("s1").length).toBe(0); // evicted
+    expect(limitedStore.getMessages("s4").length).toBe(1);
   });
 
   it("should clear session", () => {

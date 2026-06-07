@@ -8,16 +8,21 @@
   "main": "index.js",
   "scripts": {
     "start": "npx tsx -r dotenv/config src/index.ts",
-    "test": "vitest run"
+    "test": "vitest run",
+    "tui": "npx tsx -r dotenv/config src/tui/index-run.ts",
+    "tui:session": "npx tsx -r dotenv/config src/tui/index-run.ts"
   },
   "dependencies": {
     "cheerio": "^1.2.0",
     "dotenv": "^16.4.7",
+    "ink": "^7.0.5",
+    "ink-text-input": "^6.0.0",
     "js-yaml": "^4.2.0",
     "minimatch": "^10.2.5",
     "node-fetch": "^2.7.0",
     "openai": "^4.77.0",
     "playwright": "^1.60.0",
+    "react": "^19.0.0",
     "tiktoken": "^1.0.22",
     "uuid": "^14.0.0",
     "zod": "^3.23.8"
@@ -26,6 +31,7 @@
     "@types/js-yaml": "^4.0.9",
     "@types/minimatch": "^5.1.2",
     "@types/node": "^22.10.2",
+    "@types/react": "^19.0.0",
     "@types/uuid": "^10.0.0",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",

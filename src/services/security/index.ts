@@ -193,11 +193,36 @@ export interface AuditEntry {
   sessionId?: string;
 }
 
+export interface AuditLogOptions {
+  /** Максимальное количество записей (по умолчанию 10000) */
+  maxEntries?: number;
+  /** Включить PII redaction (по умолчанию true) */
+  enablePIIRedaction?: boolean;
+}
+
+const DEFAULT_AUDIT_OPTIONS: Required<AuditLogOptions> = {
+  maxEntries: 10_000,
+  enablePIIRedaction: true,
+};
+
 export class AuditLog {
   private entries: AuditEntry[] = [];
+  private options: Required<AuditLogOptions>;
+
+  constructor(options?: AuditLogOptions) {
+    this.options = { ...DEFAULT_AUDIT_OPTIONS, ...options };
+  }
 
   log(entry: AuditEntry): void {
-    this.entries.push(entry);
+    // === PII Redaction (MS Reference Architecture: Security — Data Protection) ===
+    const processed = this.options.enablePIIRedaction ? this.redactEntry(entry) : entry;
+
+    this.entries.push(processed);
+
+    // === Retention: trim if exceeds maxEntries ===
+    if (this.entries.length > this.options.maxEntries) {
+      this.entries = this.entries.slice(-this.options.maxEntries);
+    }
   }
 
   getEntries(): AuditEntry[] {
@@ -215,4 +240,26 @@ export class AuditLog {
   export(): string {
     return JSON.stringify(this.entries, null, 2);
   }
+
+  /**
+   * Применить PII redaction к полям AuditEntry.
+   * Маскирует email, phone, credentials, card numbers в resource и reason.
+   */
+  private redactEntry(entry: AuditEntry): AuditEntry {
+    const redact = (text: string): string => redactPII(text);
+    return {
+      ...entry,
+      resource: redact(entry.resource),
+      reason: entry.reason ? redact(entry.reason) : undefined,
+    };
+  }
 }
+
+// === Circuit Breaker (MS Reference Architecture: Threat Model — DoS mitigation) ===
+export {
+  CircuitBreaker,
+  CircuitBreakerRegistry,
+  type CircuitState,
+  type CircuitBreakerOptions,
+  type CircuitBreakerStats,
+} from "./circuit-breaker.js";
