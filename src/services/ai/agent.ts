@@ -3,6 +3,7 @@ import { ToolRegistry } from "./tools/registry.js";
 import { ChatMessage, AgentConfig } from "./types.js";
 import { Tracer } from "../observability/tracer.js";
 import { Metrics } from "../observability/metrics.js";
+import { RBACService, AuditLog } from "../security/index.js";
 
 const MAX_TOOL_OUTPUT = 1000;
 
@@ -57,21 +58,40 @@ finish = true если: достаточно данных для ответа, �
   return { isLoop: false, shouldFinish: false, reason: "" };
 }
 
+export interface AgentOptions {
+  maxIterations?: number;
+  systemPrompt?: string;
+  workspaceRoot?: string;
+  agentId?: string;
+  rbac?: RBACService;
+  auditLog?: AuditLog;
+}
+
 export class Agent {
   private ai: AIService;
   private tools: ToolRegistry;
   private config: AgentConfig;
   private tracer?: Tracer;
   private metrics?: Metrics;
+  private agentId: string;
 
-  constructor(config?: Partial<AgentConfig>) {
+  constructor(options?: AgentOptions) {
     this.ai = new AIService();
-    const workspaceRoot = config?.workspaceRoot || process.cwd();
-    this.tools = new ToolRegistry(workspaceRoot);
+    const workspaceRoot = options?.workspaceRoot || process.cwd();
+    this.agentId = options?.agentId || "code-agent";
+
+    // Создаём ToolRegistry с RBAC и AuditLog
+    this.tools = new ToolRegistry({
+      workspaceRoot,
+      rbac: options?.rbac,
+      auditLog: options?.auditLog,
+      agentId: this.agentId,
+    });
 
     this.config = {
-      maxIterations: 999,
+      maxIterations: options?.maxIterations ?? 999,
       systemPrompt:
+        options?.systemPrompt ??
         "Ты — ассистент разработчика.\n\n" +
         "ПРАВИЛА:\n" +
         "1. Для вопросов о коде вызови ask_codebase(question) ОДИН раз\n" +
@@ -87,7 +107,6 @@ export class Agent {
         "- write_file(path, content) — записать файл\n" +
         "- finish(answer) — завершить и дать ответ\n",
       workspaceRoot,
-      ...config,
     };
   }
 
@@ -103,6 +122,20 @@ export class Agent {
    */
   setMetrics(metrics: Metrics): void {
     this.metrics = metrics;
+  }
+
+  /**
+   * Получить ID агента
+   */
+  getAgentId(): string {
+    return this.agentId;
+  }
+
+  /**
+   * Получить ToolRegistry (для интеграции)
+   */
+  getToolRegistry(): ToolRegistry {
+    return this.tools;
   }
 
   async process(userMessage: string): Promise<string> {
@@ -183,7 +216,7 @@ export class Agent {
 
           // Трейсинг и метрики
           this.tracer?.logToolCall({
-            agentId: "code-agent",
+            agentId: this.agentId,
             toolName: tc.function.name,
             args,
             result,

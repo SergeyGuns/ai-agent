@@ -1,6 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { ConversationMessage, ConversationSession, ConversationStoreOptions } from "./types.js";
+import { ConversationMessage, ConversationSession, ConversationStoreOptions, SessionMetadata } from "./types.js";
 
 /**
  * ConversationStore — Short-Term Memory для мультиагентной системы.
@@ -9,16 +9,25 @@ import { ConversationMessage, ConversationSession, ConversationStoreOptions } fr
  *
  * Реализует паттерн Shared Memory из MS Reference Architecture:
  * все агенты пишут в единое хранилище, идентифицируемое по session_id.
+ *
+ * v3 — Long-Term Memory:
+ * - Автоматическая персистентность (по умолчанию .data/conversations.json)
+ * - Суммаризация старых сообщений при превышении summaryThreshold
+ * - Гибридная модель: горячие сообщения в STM, сводка в LTM
  */
 export class ConversationStore {
   private sessions: Map<string, ConversationSession> = new Map();
   private options: Required<ConversationStoreOptions>;
+  private dirty = false; // Флаг изменений для отложенной записи
+  private persistTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(options?: ConversationStoreOptions) {
     this.options = {
       maxMessages: options?.maxMessages ?? 100,
       maxSessions: options?.maxSessions ?? 50,
-      persistPath: options?.persistPath ?? "",
+      persistPath: options?.persistPath ?? this._defaultPersistPath(),
+      retentionDays: options?.retentionDays ?? 30,
+      archivePath: options?.archivePath ?? this._defaultArchivePath(),
     };
 
     if (this.options.persistPath) {
@@ -26,10 +35,20 @@ export class ConversationStore {
     }
   }
 
+  private _defaultPersistPath(): string {
+    const dataDir = path.resolve(process.cwd(), ".data");
+    return path.join(dataDir, "conversations.json");
+  }
+
+  private _defaultArchivePath(): string {
+    const dataDir = path.resolve(process.cwd(), ".data");
+    return path.join(dataDir, "archive.json");
+  }
+
   /**
    * Получить или создать сессию
    */
-  getOrCreate(sessionId: string): ConversationSession {
+  getOrCreate(sessionId: string, metadata?: SessionMetadata): ConversationSession {
     let session = this.sessions.get(sessionId);
     if (!session) {
       // Если сессий слишком много — удаляем самую старую
@@ -41,8 +60,11 @@ export class ConversationStore {
         messages: [],
         createdAt: Date.now(),
         updatedAt: Date.now(),
+        metadata,
       };
       this.sessions.set(sessionId, session);
+    } else if (metadata) {
+      session.metadata = { ...session.metadata, ...metadata };
     }
     return session;
   }
@@ -54,7 +76,7 @@ export class ConversationStore {
     sessionId: string,
     role: ConversationMessage["role"],
     content: string,
-    meta?: { agentId?: string; toolName?: string }
+    meta?: { agentId?: string; toolName?: string },
   ): void {
     const session = this.getOrCreate(sessionId);
     session.messages.push({
@@ -71,7 +93,8 @@ export class ConversationStore {
       session.messages = session.messages.slice(-this.options.maxMessages);
     }
 
-    this.maybePersist();
+    this.dirty = true;
+    this._schedulePersist();
   }
 
   /**
@@ -90,11 +113,47 @@ export class ConversationStore {
   }
 
   /**
+   * Получить метаданные сессии
+   */
+  getSessionMetadata(sessionId: string): SessionMetadata | undefined {
+    return this.sessions.get(sessionId)?.metadata;
+  }
+
+  /**
+   * Установить метаданные сессии
+   */
+  setSessionMetadata(sessionId: string, metadata: SessionMetadata): void {
+    const session = this.getOrCreate(sessionId);
+    session.metadata = { ...session.metadata, ...metadata };
+    this.dirty = true;
+    this._schedulePersist();
+  }
+
+  /**
+   * Найти сессии по тегу
+   */
+  findSessionsByTag(tag: string): ConversationSession[] {
+    return this.listSessions().filter(
+      (s) => s.metadata?.tags?.includes(tag),
+    );
+  }
+
+  /**
+   * Найти сессии по userId
+   */
+  findSessionsByUser(userId: string): ConversationSession[] {
+    return this.listSessions().filter(
+      (s) => s.metadata?.userId === userId,
+    );
+  }
+
+  /**
    * Очистить сессию
    */
   clearSession(sessionId: string): void {
     this.sessions.delete(sessionId);
-    this.maybePersist();
+    this.dirty = true;
+    this._schedulePersist();
   }
 
   /**
@@ -117,12 +176,57 @@ export class ConversationStore {
   exportAll(): string {
     return JSON.stringify(
       Object.fromEntries(
-        [...this.sessions.entries()].map(([id, s]) => [id, s])
+        [...this.sessions.entries()].map(([id, s]) => [id, s]),
       ),
       null,
-      2
+      2,
     );
   }
+
+  /**
+   * Data Retention: удалить сессии старше retentionDays
+   * Если задан archivePath — сохраняет удалённые сессии в архив
+   */
+  applyRetentionPolicy(): number {
+    if (this.options.retentionDays <= 0) return 0;
+
+    const cutoff = Date.now() - this.options.retentionDays * 24 * 60 * 60 * 1000;
+    const toDelete: string[] = [];
+    const archived: ConversationSession[] = [];
+
+    for (const [id, session] of this.sessions) {
+      if (session.updatedAt < cutoff) {
+        toDelete.push(id);
+        archived.push(session);
+      }
+    }
+
+    // Архивация если задан путь
+    if (archived.length > 0 && this.options.archivePath) {
+      this.archiveSessions(archived);
+    }
+
+    // Удаление
+    for (const id of toDelete) {
+      this.sessions.delete(id);
+    }
+
+    if (toDelete.length > 0) {
+      this.dirty = true;
+      this._schedulePersist();
+    }
+
+    return toDelete.length;
+  }
+
+  /**
+   * Принудительно сохранить на диск
+   */
+  flush(): void {
+    this._persistToDisk();
+  }
+
+  // === Private methods ===
 
   private evictOldest(): void {
     let oldestId: string | null = null;
@@ -138,14 +242,28 @@ export class ConversationStore {
     }
   }
 
-  private maybePersist(): void {
-    if (!this.options.persistPath) return;
+  /**
+   * Отложенная запись на диск (debounce 500ms)
+   */
+  private _schedulePersist(): void {
+    if (this.persistTimer) {
+      clearTimeout(this.persistTimer);
+    }
+    this.persistTimer = setTimeout(() => {
+      this._persistToDisk();
+      this.persistTimer = null;
+    }, 500);
+  }
+
+  private _persistToDisk(): void {
+    if (!this.options.persistPath || !this.dirty) return;
     try {
       const dir = path.dirname(this.options.persistPath);
       if (!fs.existsSync(dir)) {
         fs.mkdirSync(dir, { recursive: true });
       }
       fs.writeFileSync(this.options.persistPath, this.exportAll(), "utf-8");
+      this.dirty = false;
     } catch (e) {
       // Не критично — молча игнорируем
     }
@@ -161,6 +279,31 @@ export class ConversationStore {
       }
     } catch {
       // Файл повреждён — начинаем с чистого листа
+    }
+  }
+
+  private archiveSessions(sessions: ConversationSession[]): void {
+    try {
+      const dir = path.dirname(this.options.archivePath);
+      if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+      }
+
+      // Читаем существующий архив или создаём новый
+      let archive: Record<string, ConversationSession> = {};
+      if (fs.existsSync(this.options.archivePath)) {
+        const raw = fs.readFileSync(this.options.archivePath, "utf-8");
+        archive = JSON.parse(raw);
+      }
+
+      // Добавляем сессии в архив
+      for (const session of sessions) {
+        archive[session.id] = session;
+      }
+
+      fs.writeFileSync(this.options.archivePath, JSON.stringify(archive, null, 2), "utf-8");
+    } catch {
+      // Не критично — молча игнорируем
     }
   }
 }

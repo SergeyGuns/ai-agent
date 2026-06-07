@@ -1,11 +1,11 @@
 import { Agent } from "../services/ai/agent.js";
 import { Orchestrator } from "../orchestrator/index.js";
-import { classify } from "../orchestrator/classifier.js";
 import { loadRegistry } from "../registry/registry.js";
 import { WebResearchAgent } from "./web-research/agent.js";
 import { ConversationStore } from "../services/memory/index.js";
 import { Tracer } from "../services/observability/tracer.js";
 import { Metrics } from "../services/observability/metrics.js";
+import { RBACService, AuditLog } from "../security/index.js";
 import type { AgentDescriptor, AgentRequest, AgentResponse } from "../orchestrator/types.js";
 
 export class SupervisorAgent {
@@ -16,6 +16,8 @@ export class SupervisorAgent {
   private conversations: ConversationStore;
   private tracer: Tracer;
   private metrics: Metrics;
+  private rbac: RBACService;
+  private auditLog: AuditLog;
 
   constructor(workspaceRoot?: string) {
     this.registry = loadRegistry();
@@ -24,11 +26,24 @@ export class SupervisorAgent {
     this.tracer = this.orchestrator.getTracer();
     this.metrics = new Metrics();
 
-    // Создаём агентов
+    // Инициализация RBAC и Audit Log
+    this.rbac = new RBACService();
+    this.auditLog = new AuditLog();
+
+    // Устанавливаем роли агентам на основе их capabilities
+    for (const descriptor of this.registry) {
+      const role = this.inferRole(descriptor.capabilities);
+      this.rbac.setAgentRole(descriptor.id, role);
+    }
+
+    // Создаём агентов с RBAC и AuditLog
     this.codeAgent = new Agent({
       maxIterations: 999,
       systemPrompt: "Ты — AI-ассистент для работы с кодом. Используй инструменты.",
       workspaceRoot: workspaceRoot || process.cwd(),
+      agentId: "code-agent",
+      rbac: this.rbac,
+      auditLog: this.auditLog,
     });
     this.codeAgent.setTracer(this.tracer);
     this.codeAgent.setMetrics(this.metrics);
@@ -79,19 +94,24 @@ export class SupervisorAgent {
     }
   }
 
+  /**
+   * Определить роль агента на основе его capabilities
+   */
+  private inferRole(capabilities: string[]): "admin" | "developer" | "researcher" | "readonly" {
+    if (capabilities.includes("general")) return "readonly";
+    if (capabilities.some((c) => ["web-search", "web-scrape", "browser", "fact-check"].includes(c))) {
+      return "researcher";
+    }
+    if (capabilities.some((c) => ["code-search", "file-read", "file-list"].includes(c))) {
+      return "developer";
+    }
+    return "readonly";
+  }
+
   async handle(message: string, sessionId?: string): Promise<string> {
     const sid = sessionId ?? "session-" + Date.now();
-    const { intent, confidence } = classify(message);
-    this.tracer.info("Supervisor", "Classified intent: " + intent, { intent, confidence, sessionId: sid });
 
-    // Находим подходящего агента
-    const agent = this.orchestrator.listAgents().find((a) =>
-      a.capabilities.includes(intent),
-    );
-
-    const agentId = agent?.id ?? "general-agent";
-    this.tracer.info("Supervisor", "Selected agent: " + agentId, { agentId, sessionId: sid });
-
+    // Единая классификация через Orchestrator (убрана двойная)
     const response = await this.orchestrator.handle(message, sid);
     return response.content;
   }
@@ -136,5 +156,26 @@ export class SupervisorAgent {
    */
   getTrace(traceId: string) {
     return this.tracer.getTrace(traceId);
+  }
+
+  /**
+   * Получить audit log
+   */
+  getAuditLog(): string {
+    return this.auditLog.export();
+  }
+
+  /**
+   * Получить отклонённые вызовы из audit log
+   */
+  getDeniedCalls() {
+    return this.auditLog.getDeniedEntries();
+  }
+
+  /**
+   * Получить RBAC сервис (для настройки ролей во время выполнения)
+   */
+  getRBAC(): RBACService {
+    return this.rbac;
   }
 }

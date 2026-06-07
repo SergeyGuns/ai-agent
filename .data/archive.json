@@ -1,0 +1,14 @@
+{
+  "old-session": {
+    "id": "old-session",
+    "messages": [
+      {
+        "role": "user",
+        "content": "Hello",
+        "timestamp": 1780804627362
+      }
+    ],
+    "createdAt": 1780804627362,
+    "updatedAt": 1780631827362
+  }
+}

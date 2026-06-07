@@ -1,5 +1,6 @@
 import * as http from "node:http";
 import * as https from "node:https";
+import { RateLimiter, withRetry } from "./rate-limiter.js";
 
 interface SearchResult {
   title: string;
@@ -7,10 +8,13 @@ interface SearchResult {
   snippet: string;
 }
 
+// === Rate Limiter: макс 2 запроса в секунду к одному хосту ===
+const globalRateLimiter = new RateLimiter(2);
+
 // ===== web_search =====
 
 export async function webSearch(query: string, limit: number = 10): Promise<SearchResult[]> {
-  // Пробуем несколько методов поиска
+  // Пробуем несколько методов поиска с retry
   const methods = [
     () => searchDuckDuckGoHTML(query, limit),
     () => searchDuckDuckGoLite(query, limit),
@@ -18,7 +22,16 @@ export async function webSearch(query: string, limit: number = 10): Promise<Sear
 
   for (const method of methods) {
     try {
-      const results = await method();
+      const results = await withRetry(
+        () => method(),
+        {
+          maxRetries: 2,
+          baseDelayMs: 2000,
+          onRetry: (attempt, error, delay) => {
+            console.log(`[webSearch] Retry ${attempt} after ${delay}ms: ${error.message}`);
+          },
+        },
+      );
       if (results.length > 0) return results;
     } catch (e) {
       console.error("[webSearch] Method failed:", (e as Error).message);
@@ -29,6 +42,8 @@ export async function webSearch(query: string, limit: number = 10): Promise<Sear
 }
 
 async function searchDuckDuckGoHTML(query: string, limit: number): Promise<SearchResult[]> {
+  await globalRateLimiter.acquire();
+
   const url = "https://html.duckduckgo.com/html/?q=" + encodeURIComponent(query);
 
   const html = await fetchUrl(url, {
@@ -43,7 +58,6 @@ async function searchDuckDuckGoHTML(query: string, limit: number): Promise<Searc
   const results: SearchResult[] = [];
 
   // Парсим результаты поисковой выдачи DDG
-  // Формат: <div class="result results_links results_links_deep web-result">
   const resultRegex = /<div class="result[^"]*">[\s\S]*?<\/div>\s*<\/div>\s*<\/div>/g;
   let block;
   let count = 0;
@@ -51,7 +65,6 @@ async function searchDuckDuckGoHTML(query: string, limit: number): Promise<Searc
   while ((block = resultRegex.exec(html)) !== null && count < limit) {
     const blockHtml = block[0];
 
-    // Извлекаем ссылку и заголовок
     const titleMatch = blockHtml.match(/<a[^>]*class="result__a"[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/i);
     const snippetMatch = blockHtml.match(/<a[^>]*class="result__snippet"[^>]*>([\s\S]*?)<\/a>/i);
 
@@ -77,6 +90,8 @@ async function searchDuckDuckGoHTML(query: string, limit: number): Promise<Searc
 }
 
 async function searchDuckDuckGoLite(query: string, limit: number): Promise<SearchResult[]> {
+  await globalRateLimiter.acquire();
+
   const url = "https://lite.duckduckgo.com/lite/?q=" + encodeURIComponent(query);
 
   const html = await fetchUrl(url, {
@@ -89,7 +104,6 @@ async function searchDuckDuckGoLite(query: string, limit: number): Promise<Searc
 
   const results: SearchResult[] = [];
 
-  // Lite версия проще — таблица с результатами
   const rowRegex = /<tr[^>]*>[\s\S]*?<\/tr>/gi;
   let row;
   let count = 0;
@@ -97,7 +111,6 @@ async function searchDuckDuckGoLite(query: string, limit: number): Promise<Searc
   while ((row = rowRegex.exec(html)) !== null && count < limit) {
     const rowHtml = row[0];
 
-    // Ищем ссылку в строке
     const linkMatch = rowHtml.match(/<a[^>]*href="(https?:\/\/[^"]+)"[^>]*>([\s\S]*?)<\/a>/i);
     const snippetMatch = rowHtml.match(/<td class="result-snippet">([\s\S]*?)<\/td>/i);
 
@@ -117,16 +130,28 @@ async function searchDuckDuckGoLite(query: string, limit: number): Promise<Searc
 // ===== fetch_page =====
 
 export async function fetchPage(url: string, maxChars: number = 5000): Promise<string> {
-  const html = await fetchUrl(url, {
-    headers: {
-      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-      "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-      "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
+  await globalRateLimiter.acquire();
+
+  const html = await withRetry(
+    () =>
+      fetchUrl(url, {
+        headers: {
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+          "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+          "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
+        },
+        timeout: 15000,
+        followRedirects: true,
+        maxRedirects: 5,
+      }),
+    {
+      maxRetries: 2,
+      baseDelayMs: 1000,
+      onRetry: (attempt, error, delay) => {
+        console.log(`[fetchPage] Retry ${attempt} after ${delay}ms: ${error.message}`);
+      },
     },
-    timeout: 15000,
-    followRedirects: true,
-    maxRedirects: 5,
-  });
+  );
 
   return htmlToText(html, maxChars);
 }
@@ -134,12 +159,21 @@ export async function fetchPage(url: string, maxChars: number = 5000): Promise<s
 // ===== extract_links =====
 
 export async function extractLinks(url: string): Promise<string[]> {
-  const html = await fetchUrl(url, {
-    headers: {
-      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+  await globalRateLimiter.acquire();
+
+  const html = await withRetry(
+    () =>
+      fetchUrl(url, {
+        headers: {
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        },
+        timeout: 10000,
+      }),
+    {
+      maxRetries: 1,
+      baseDelayMs: 1000,
     },
-    timeout: 10000,
-  });
+  );
 
   const links: string[] = [];
   const regex = /<a[^>]+href="([^"]+)"/gi;
@@ -147,10 +181,8 @@ export async function extractLinks(url: string): Promise<string[]> {
 
   while ((match = regex.exec(html)) !== null) {
     let href = match[1];
-    // Пропускаем якоря и javascript
     if (href.startsWith("#") || href.startsWith("javascript:")) continue;
 
-    // Относительные ссылки превращаем в абсолютные
     if (href.startsWith("/")) {
       try {
         const parsed = new URL(url);
@@ -211,7 +243,9 @@ function fetchUrl(
 
         // Проверяем что ответ успешный
         if (res.statusCode && (res.statusCode < 200 || res.statusCode >= 400)) {
-          reject(new Error("HTTP " + res.statusCode));
+          const error = new Error("HTTP " + res.statusCode) as any;
+          error.statusCode = res.statusCode;
+          reject(error);
           return;
         }
 

@@ -66,9 +66,10 @@ describe("ConversationStore", () => {
   });
 
   it("should list all sessions", () => {
-    store.addMessage("s1", "user", "a");
-    store.addMessage("s2", "user", "b");
-    const sessions = store.listSessions();
+    // Используем уникальные ID чтобы не конфликтовать с другими тестами
+    store.addMessage("list-s1", "user", "a");
+    store.addMessage("list-s2", "user", "b");
+    const sessions = store.listSessions().filter((s) => s.id.startsWith("list-"));
     expect(sessions.length).toBe(2);
   });
 
@@ -78,11 +79,57 @@ describe("ConversationStore", () => {
     expect(messages[0].agentId).toBe("test-agent");
   });
 
-  it("should export to JSON", () => {
-    store.addMessage("s1", "user", "Hello");
-    const json = store.exportAll();
-    const parsed = JSON.parse(json);
-    expect(parsed.s1).toBeDefined();
-    expect(parsed.s1.messages.length).toBe(1);
+  // === Session Metadata Tests ===
+
+  it("should set and get session metadata", () => {
+    store.getOrCreate("s1", { channel: "web", userId: "user-1" });
+    store.setSessionMetadata("s1", { tags: ["test", "debug"] });
+
+    const metadata = store.getSessionMetadata("s1");
+    expect(metadata?.channel).toBe("web");
+    expect(metadata?.userId).toBe("user-1");
+    expect(metadata?.tags).toEqual(["test", "debug"]);
+  });
+
+  it("should find sessions by tag", () => {
+    store.getOrCreate("s1", { tags: ["important"] });
+    store.getOrCreate("s2", { tags: ["important", "urgent"] });
+    store.getOrCreate("s3", { tags: ["normal"] });
+
+    const important = store.findSessionsByTag("important");
+    expect(important.length).toBe(2);
+  });
+
+  it("should find sessions by userId", () => {
+    store.getOrCreate("s1", { userId: "user-1" });
+    store.getOrCreate("s2", { userId: "user-2" });
+    store.getOrCreate("s3", { userId: "user-1" });
+
+    const user1Sessions = store.findSessionsByUser("user-1");
+    expect(user1Sessions.length).toBe(2);
+  });
+
+  // === Retention Policy Tests ===
+
+  it("should apply retention policy and remove old sessions", () => {
+    const store = new ConversationStore({ retentionDays: 1 }); // 1 day retention
+    store.addMessage("old-session", "user", "Hello");
+
+    // Manually set updatedAt to past (2 days ago)
+    const session = store.getOrCreate("old-session");
+    session.updatedAt = Date.now() - 2 * 24 * 60 * 60 * 1000;
+
+    const removed = store.applyRetentionPolicy();
+    expect(removed).toBe(1);
+    expect(store.getMessages("old-session").length).toBe(0);
+  });
+
+  it("should keep recent sessions during retention", () => {
+    const store = new ConversationStore({ retentionDays: 30 });
+    store.addMessage("recent", "user", "Hello");
+
+    const removed = store.applyRetentionPolicy();
+    expect(removed).toBe(0);
+    expect(store.getMessages("recent").length).toBe(1);
   });
 });

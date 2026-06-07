@@ -2,18 +2,42 @@
   name: Code Agent
   type: local
   capabilities: [code-search, file-read, file-list]
+  role: developer
+  version: "1.1.0"
+  status: active
+  description: "Agent for code search, file reading, and file listing operations"
+  promptVersion: "1.1.0"
+  trafficWeight: 1
 
 - id: rag-agent
   name: RAG Agent
   type: local
   capabilities: [retrieval, summarization]
+  role: researcher
+  version: "1.0.0"
+  status: active
+  description: "Agent for retrieval-augmented generation and document summarization"
+  promptVersion: "1.0.0"
+  trafficWeight: 1
 
 - id: web-research-agent
   name: Web Research Agent
   type: local
   capabilities: [web-search, web-scrape, browser, fact-check]
+  role: researcher
+  version: "1.2.0"
+  status: active
+  description: "Agent for web research, search, scraping, and fact verification"
+  promptVersion: "1.2.0"
+  trafficWeight: 1
 
 - id: general-agent
   name: General Agent
   type: local
   capabilities: [general]
+  role: readonly
+  version: "1.0.0"
+  status: active
+  description: "General-purpose agent for queries that don't fit specialized agents"
+  promptVersion: "1.0.0"
+  trafficWeight: 1
